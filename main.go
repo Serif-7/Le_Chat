@@ -16,6 +16,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
 
+	// markdown rendering
+	"github.com/charmbracelet/glamour"
+
 	// Chat
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -60,6 +63,7 @@ type model struct {
 	username    string
 	clientID    string
 	clientChan  chan chatMessage
+	mdRenderer  *glamour.TermRenderer // markdown renderer
 	viewport    viewport.Model
 	messages    []string
 	textarea    textarea.Model
@@ -228,8 +232,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			formattedMsg = systemStyle.Render(msg.content)
 		} else {
 			senderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
-			formattedMsg = senderStyle.Render(msg.sender+": ") + msg.content
+			senderPrefix := senderStyle.Render(msg.sender + ": ")
+
+			// Always try to render as Markdown
+			rendered, err := m.mdRenderer.Render(msg.content)
+			var content string
+			if err == nil {
+				content = strings.TrimSuffix(rendered, "\n")
+				content = strings.TrimPrefix(content, "\n")
+			} else {
+				// Fallback to plain text if rendering fails
+				content = msg.content
+			}
+
+			formattedMsg = senderPrefix + content
 		}
+
+		// //render markdown
+		// out, _ := glamour.Render(formattedMsg, "dark")
 
 		m.messages = append(m.messages, formattedMsg)
 		m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(strings.Join(m.messages, "\n")))
@@ -303,6 +323,10 @@ func teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 
 	// Get a renderer for the current SSH session
 	renderer := bubbletea.MakeRenderer(s)
+	mdRenderer, _ := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(80), // Adjust based on your needs
+	)
 
 	// Initialize the textarea
 	ta := textarea.New()
@@ -342,6 +366,7 @@ Type a message and press Enter to send.`)
 		username:    username,
 		clientID:    clientID,
 		clientChan:  clientChan,
+		mdRenderer:  mdRenderer,
 		textarea:    ta,
 		messages:    []string{},
 		viewport:    vp,
