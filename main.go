@@ -4,20 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/log"
 
-	//SSH server
+	// Chat
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
+
+	// SSH
 	"github.com/charmbracelet/ssh"
 	"github.com/charmbracelet/wish"
 	"github.com/charmbracelet/wish/bubbletea"
@@ -30,12 +33,33 @@ const (
 	gap  = "\n\n"
 )
 
+var (
+	// Global message channel that all clients will send to and listen on
+	msgChan = make(chan chatMessage)
+
+	// Map to keep track of active client channels
+	clients = struct {
+		sync.RWMutex
+		channels map[string]chan chatMessage
+	}{channels: make(map[string]chan chatMessage)}
+)
+
+// chatMessage represents a message in the chat
+type chatMessage struct {
+	sender  string
+	content string
+	time    time.Time
+}
+
 type (
 	errMsg error
 )
 
-// contains all state
+// contains all state for a particular session
 type model struct {
+	username    string
+	clientID    string
+	clientChan  chan chatMessage
 	viewport    viewport.Model
 	messages    []string
 	textarea    textarea.Model
@@ -43,40 +67,107 @@ type model struct {
 	err         error
 }
 
-func initialModel() model {
+// starts the global message listener that broadcasts messages to all clients
+func startMessageBroadcaster() {
+	go func() {
+		for msg := range msgChan {
+			// Broadcast message to all clients
+			clients.RLock()
+			for _, ch := range clients.channels {
+				// Non-blocking send to each client
+				select {
+				case ch <- msg:
+					// Message sent successfully
+				default:
+					// Channel is full or closed, skip this one
+				}
+			}
+			clients.RUnlock()
+		}
+	}()
+}
 
-	ta := textarea.New()
-	ta.Placeholder = "Send a message..."
-	ta.Focus()
+// Register a new client to receive messages
+func registerClient(id string) chan chatMessage {
+	clientChan := make(chan chatMessage, 100) // Buffer for messages
 
-	ta.Prompt = "┃ "
-	ta.CharLimit = 1000
+	clients.Lock()
+	clients.channels[id] = clientChan
+	clients.Unlock()
 
-	ta.SetWidth(30)
-	ta.SetHeight(3)
+	return clientChan
+}
 
-	// Remove cursor line styling
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+// Unregister a client when they disconnect
+func unregisterClient(id string) {
+	clients.Lock()
+	defer clients.Unlock()
 
-	ta.ShowLineNumbers = false
-
-	vp := viewport.New(30, 5)
-	vp.SetContent(`Welcome to the chat room!
-Type a message and press Enter to send.`)
-
-	ta.KeyMap.InsertNewline.SetEnabled(false)
-
-	return model{
-		textarea:    ta,
-		messages:    []string{},
-		viewport:    vp,
-		senderStyle: lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
-		err:         nil,
+	if ch, ok := clients.channels[id]; ok {
+		close(ch)
+		delete(clients.channels, id)
 	}
 }
 
+// tea.Cmd that checks for new messages
+func checkMessagesCmd(ch chan chatMessage) tea.Cmd {
+	return func() tea.Msg {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		<-ticker.C
+		return checkNewMessages(ch)
+	}
+}
+
+func checkNewMessages(ch chan chatMessage) tea.Msg {
+	select {
+	case msg, ok := <-ch:
+		if !ok {
+			return nil // Channel closed
+		}
+		return msg
+	default:
+		// No message available, don't block
+		return nil
+	}
+}
+
+// func initialModel() model {
+
+// 	ta := textarea.New()
+// 	ta.Placeholder = "Send a message..."
+// 	ta.Focus()
+
+// 	ta.Prompt = "┃ "
+// 	ta.CharLimit = 1000
+
+// 	ta.SetWidth(30)
+// 	ta.SetHeight(3)
+
+// 	// Remove cursor line styling
+// 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+
+// 	ta.ShowLineNumbers = false
+
+// 	vp := viewport.New(30, 5)
+// 	vp.SetContent(`Welcome to the chat room!
+// Type a message and press Enter to send.`)
+
+// 	ta.KeyMap.InsertNewline.SetEnabled(false)
+
+// 	return model{
+// 		textarea:    ta,
+// 		messages:    []string{},
+// 		viewport:    vp,
+// 		senderStyle: lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
+// 		err:         nil,
+// 	}
+// }
+
 func (m model) Init() tea.Cmd {
-	return textarea.Blink
+	return tea.Batch(
+		textarea.Blink,
+		checkMessagesCmd(m.clientChan),
+	)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -103,14 +194,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
-			fmt.Println(m.textarea.Value())
+			// Send leave message before quitting
+			leaveMsg := chatMessage{
+				sender:  "system",
+				content: fmt.Sprintf("%s has left the chat", m.username),
+				time:    time.Now(),
+			}
+			msgChan <- leaveMsg
+
+			// Unregister the client
+			unregisterClient(m.clientID)
 			return m, tea.Quit
 		case tea.KeyEnter:
-			m.messages = append(m.messages, m.senderStyle.Render("You: ")+m.textarea.Value()) //TODO: Replace 'You: ' with assigned number
-			m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(strings.Join(m.messages, "\n")))
+			// Create and broadcast the message
+			newMsg := chatMessage{
+				sender:  m.username,
+				content: m.textarea.Value(),
+				time:    time.Now(),
+			}
+			msgChan <- newMsg
+			// m.messages = append(m.messages, m.senderStyle.Render(m.username+": ")+m.textarea.Value())
+			// m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(strings.Join(m.messages, "\n")))
+
+			//clear input
 			m.textarea.Reset()
 			m.viewport.GotoBottom()
 		}
+	case chatMessage:
+		// Format and add the received message
+		var formattedMsg string
+		if msg.sender == "system" {
+			systemStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+			formattedMsg = systemStyle.Render(msg.content)
+		} else {
+			senderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+			formattedMsg = senderStyle.Render(msg.sender+": ") + msg.content
+		}
+
+		m.messages = append(m.messages, formattedMsg)
+		m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(strings.Join(m.messages, "\n")))
+		m.viewport.GotoBottom()
+
+		// Continue checking for messages
+		return m, checkMessagesCmd(m.clientChan)
 
 	// We handle errors just like any other message
 	case errMsg:
@@ -118,7 +244,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	return m, tea.Batch(tiCmd, vpCmd)
+	return m, tea.Batch(
+		tiCmd,
+		vpCmd,
+		checkMessagesCmd(m.clientChan),
+	)
+	// return m, tea.Batch(tiCmd, vpCmd)
 }
 
 func (m model) View() string {
@@ -149,14 +280,98 @@ func (m model) View() string {
 	return s
 }
 
+// You can wire any Bubble Tea model up to the middleware with a function that
+// handles the incoming ssh.Session. Here we just grab the terminal info and
+// pass it to the new model. You can also return tea.ProgramOptions (such as
+// tea.WithAltScreen) on a session by session basis.
+func teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
+
+	// When running a Bubble Tea app over SSH, you shouldn't use the default
+	// lipgloss.NewStyle function.
+	// That function will use the color profile from the os.Stdin, which is the
+	// server, not the client.
+	// We provide a MakeRenderer function in the bubbletea middleware package,
+	// so you can easily get the correct renderer for the current session, and
+	// use it to create the styles.
+	// The recommended way to use these styles is to then pass them down to
+	// your Bubble Tea model.
+	// renderer := bubbletea.MakeRenderer(s)
+	// txtStyle := renderer.NewStyle().Foreground(lipgloss.Color("10"))
+	// quitStyle := renderer.NewStyle().Foreground(lipgloss.Color("8"))
+
+	//QUESTION: How do we write this function?
+
+	// Get a renderer for the current SSH session
+	renderer := bubbletea.MakeRenderer(s)
+
+	// Initialize the textarea
+	ta := textarea.New()
+	ta.Placeholder = "Send a message..."
+	ta.Focus()
+	ta.Prompt = "┃ "
+	ta.CharLimit = 1000
+	ta.SetWidth(30)
+	ta.SetHeight(3)
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.ShowLineNumbers = false
+	ta.KeyMap.InsertNewline.SetEnabled(false)
+
+	// Initialize the viewport
+	vp := viewport.New(30, 5)
+	vp.SetContent(`Welcome to the chat room!
+Type a message and press Enter to send.`)
+
+	// Get the SSH username to display in the chat
+	username := s.User()
+	if username == "" {
+		username = "Anonymous"
+	}
+
+	// Generate a unique client ID
+	clientID := fmt.Sprintf("%s-%d", username, time.Now().UnixNano())
+
+	// Register this client to receive messages
+	clientChan := registerClient(clientID)
+
+	// Create a command to check for new messages
+	// checkMessages := func() tea.Msg {
+	// 	return checkNewMessages(clientChan)
+	// }
+
+	m := model{
+		username:    username,
+		clientID:    clientID,
+		clientChan:  clientChan,
+		textarea:    ta,
+		messages:    []string{},
+		viewport:    vp,
+		senderStyle: renderer.NewStyle().Foreground(lipgloss.Color("5")),
+		err:         nil,
+	}
+
+	// Add system message about user joining
+	joinMsg := chatMessage{
+		sender:  "system",
+		content: fmt.Sprintf("%s has joined the chat", username),
+		time:    time.Now(),
+	}
+	msgChan <- joinMsg
+
+	return m, []tea.ProgramOption{
+		tea.WithAltScreen(),
+		tea.WithContext(context.Background()),
+	}
+}
+
 func main() {
+
+	startMessageBroadcaster()
 
 	s, err := wish.NewServer(
 		wish.WithAddress(net.JoinHostPort(host, port)),
 		wish.WithHostKeyPath(".ssh/id_ed25519"),
 		wish.WithMiddleware(
 			bubbletea.Middleware(teaHandler),
-			// activeterm.Middleware(), // Bubble Tea apps usually require a PTY.
 			logging.Middleware(),
 		),
 	)
@@ -180,17 +395,5 @@ func main() {
 	if err := s.Shutdown(ctx); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
 		log.Error("Could not stop server", "error", err)
 	}
-
-	// p := tea.NewProgram(initialModel())
-
-	// if _, err := p.Run(); err != nil {
-	// 	log.Fatal(err)
-	// }
-
-	// p := tea.NewProgram(initialModel())
-	// if _, err := p.Run(); err != nil {
-	// 	fmt.Printf("Alas, there's been an error: %v", err)
-	// 	os.Exit(1)
-	// }
 
 }
