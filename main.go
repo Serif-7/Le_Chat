@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
+	"github.com/charmbracelet/wish/activeterm"
 
 	// markdown rendering
 	"github.com/charmbracelet/glamour"
@@ -31,7 +32,7 @@ import (
 )
 
 const (
-	host = "localhost"
+	host = "0.0.0.0"
 	port = "8080"
 	gap  = "\n\n"
 )
@@ -196,8 +197,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.viewport.GotoBottom()
 	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEsc:
+		switch msg.String() {
+		case "enter":
+			// Regular Enter - send the message
+			if m.textarea.Value() != "" {
+				// Create and broadcast the message
+				newMsg := chatMessage{
+					sender:  m.username,
+					content: m.textarea.Value(),
+					time:    time.Now(),
+				}
+				msgChan <- newMsg
+
+				// Clear the input
+				m.textarea.Reset()
+				m.viewport.GotoBottom()
+			}
+			// Skip default textarea handling for this key
+			return m, checkMessagesCmd(m.clientChan)
+		case "shift+enter":
+			// Shift+Enter - insert a newline
+			m.textarea, tiCmd = m.textarea.Update(tea.KeyMsg{
+				Type:  tea.KeyRunes,
+				Runes: []rune("\n"),
+			})
+			return m, tea.Batch(tiCmd, checkMessagesCmd(m.clientChan))
+		case "escape", "ctrl+c":
 			// Send leave message before quitting
 			leaveMsg := chatMessage{
 				sender:  "system",
@@ -209,23 +234,47 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Unregister the client
 			unregisterClient(m.clientID)
 			return m, tea.Quit
-		case tea.KeyEnter:
-			// Create and broadcast the message
-			newMsg := chatMessage{
-				sender:  m.username,
-				content: m.textarea.Value(),
-				time:    time.Now(),
-			}
-			msgChan <- newMsg
-			// m.messages = append(m.messages, m.senderStyle.Render(m.username+": ")+m.textarea.Value())
-			// m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(strings.Join(m.messages, "\n")))
-
-			//clear input
-			m.textarea.Reset()
-			m.viewport.GotoBottom()
 		}
+		// switch msg.Type {
+		// case tea.KeyCtrlC, tea.KeyEsc:
+		// 	// Send leave message before quitting
+		// 	leaveMsg := chatMessage{
+		// 		sender:  "system",
+		// 		content: fmt.Sprintf("%s has left the chat", m.username),
+		// 		time:    time.Now(),
+		// 	}
+		// 	msgChan <- leaveMsg
+
+		// 	// Unregister the client
+		// 	unregisterClient(m.clientID)
+		// 	return m, tea.Quit
+		// case tea.KeyEnter:
+		// 	if m.textarea.Value() == "" {
+		// 		return m, nil
+		// 	}
+		// 	// Create and broadcast the message
+		// 	newMsg := chatMessage{
+		// 		sender:  m.username,
+		// 		content: m.textarea.Value(),
+		// 		time:    time.Now(),
+		// 	}
+		// 	msgChan <- newMsg
+		// m.messages = append(m.messages, m.senderStyle.Render(m.username+": ")+m.textarea.Value())
+		// m.viewport.SetContent(lipgloss.NewStyle().Width(m.viewport.Width).Render(strings.Join(m.messages, "\n")))
+
+		//clear input
+		// m.textarea.Reset()
+		// m.viewport.GotoBottom()
+		// }
 	case chatMessage:
 		// Format and add the received message
+		// f, err := tea.LogToFile("debug.log", "debug")
+		// if err != nil {
+		// 	fmt.Println("fatal:", err)
+		// 	os.Exit(1)
+		// }
+		// defer f.Close()
+
 		var formattedMsg string
 		if msg.sender == "system" {
 			systemStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
@@ -233,19 +282,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			senderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 			senderPrefix := senderStyle.Render(msg.sender + ": ")
+			// f.WriteString("Sender prefix: " + senderPrefix + "\n")
+			// f.WriteString("Plain Text: " + msg.content + "\n")
+
+			// str := strings.TrimSpace(msg.content)
 
 			// Always try to render as Markdown
 			rendered, err := m.mdRenderer.Render(msg.content)
 			var content string
 			if err == nil {
-				content = strings.TrimSuffix(rendered, "\n")
-				content = strings.TrimPrefix(content, "\n")
+				content = strings.Trim(rendered, " \n\t")
+				content = strings.TrimSpace(content)
 			} else {
 				// Fallback to plain text if rendering fails
 				content = msg.content
 			}
 
+			// f.WriteString("Rendered content: " + content + "\n")
+			// f.WriteString("Trimmed content: " + strings.TrimSpace(content) + "\n")
+
 			formattedMsg = senderPrefix + content
+			// f.WriteString(formattedMsg)
+
 		}
 
 		// //render markdown
@@ -335,10 +393,10 @@ func teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	ta.Prompt = "┃ "
 	ta.CharLimit = 1000
 	ta.SetWidth(30)
-	ta.SetHeight(3)
+	ta.SetHeight(5)
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.ShowLineNumbers = false
-	ta.KeyMap.InsertNewline.SetEnabled(false)
+	// ta.KeyMap.InsertNewline.SetEnabled(false)
 
 	// Initialize the viewport
 	vp := viewport.New(30, 5)
@@ -398,6 +456,7 @@ func main() {
 		wish.WithMiddleware(
 			bubbletea.Middleware(teaHandler),
 			logging.Middleware(),
+			activeterm.Middleware(),
 		),
 	)
 	if err != nil {
