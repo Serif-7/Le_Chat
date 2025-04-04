@@ -33,7 +33,7 @@ import (
 
 const (
 	host = "0.0.0.0"
-	port = "10000"
+	port = "8888"
 	gap  = "\n\n"
 )
 
@@ -282,6 +282,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			senderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
 			senderPrefix := senderStyle.Render(msg.sender + ": ")
+			timeStamp := senderStyle.Render(fmt.Sprintf("%d", msg.time.Day()) + ":" + fmt.Sprintf("%d", msg.time.Hour()) + ":" + fmt.Sprintf("%d", msg.time.Minute()))
 			// f.WriteString("Sender prefix: " + senderPrefix + "\n")
 			// f.WriteString("Plain Text: " + msg.content + "\n")
 
@@ -301,7 +302,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// f.WriteString("Rendered content: " + content + "\n")
 			// f.WriteString("Trimmed content: " + strings.TrimSpace(content) + "\n")
 
-			formattedMsg = senderPrefix + content
+			formattedMsg = senderPrefix + content + timeStamp
 			// f.WriteString(formattedMsg)
 
 		}
