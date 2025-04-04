@@ -33,7 +33,7 @@ import (
 
 const (
 	host = "0.0.0.0"
-	port = "8080"
+	port = "10000"
 	gap  = "\n\n"
 )
 
@@ -377,8 +377,6 @@ func teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	// txtStyle := renderer.NewStyle().Foreground(lipgloss.Color("10"))
 	// quitStyle := renderer.NewStyle().Foreground(lipgloss.Color("8"))
 
-	//QUESTION: How do we write this function?
-
 	// Get a renderer for the current SSH session
 	renderer := bubbletea.MakeRenderer(s)
 	mdRenderer, _ := glamour.NewTermRenderer(
@@ -453,6 +451,22 @@ func main() {
 	s, err := wish.NewServer(
 		wish.WithAddress(net.JoinHostPort(host, port)),
 		wish.WithHostKeyPath(".ssh/id_ed25519"),
+		// with this enabled, users can log in with their pubkey
+		// wish.WithPublicKeyAuth(func(ctx ssh.Context, key ssh.PublicKey) bool {
+		// 	return key.Type() == "ssh-ed25519"
+		// }),
+		// wish.WithPasswordAuth(func(ctx ssh.Context, password string) bool {
+		// 	// Define your username/password pairs here
+		// 	credentials := map[string]string{
+		// 		"daniel": "admin",
+		// 		"nikki":  "nikki",
+		// 		"anna":   "anna",
+		// 	}
+
+		// 	// Check if the provided username exists and the password matches
+		// 	expectedPassword, userExists := credentials[ctx.User()]
+		// 	return userExists && password == expectedPassword
+		// }),
 		wish.WithMiddleware(
 			bubbletea.Middleware(teaHandler),
 			logging.Middleware(),
