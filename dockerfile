@@ -39,3 +39,7 @@ EXPOSE 8888
 
 # Command to run the application
 CMD ["/app/ssh-server"]
+
+
+# build image: docker build -t ssh-chat .
+# run image: docker run -d -p 8888:8888 --name chat-server ssh-chat

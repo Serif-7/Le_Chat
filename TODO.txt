@@ -1,0 +1,2 @@
+[ ] fix markdown rendering when dockerized
+[ ] add multi-line messages (shift+enter)

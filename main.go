@@ -281,8 +281,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			formattedMsg = systemStyle.Render(msg.content)
 		} else {
 			senderStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+			timeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#808080")) // gray
 			senderPrefix := senderStyle.Render(msg.sender + ": ")
-			timeStamp := senderStyle.Render(fmt.Sprintf("%d", msg.time.Day()) + ":" + fmt.Sprintf("%d", msg.time.Hour()) + ":" + fmt.Sprintf("%d", msg.time.Minute()))
+			timeStamp := timeStyle.Render(fmt.Sprintf("%d", msg.time.Hour()) + ":" + fmt.Sprintf("%d", msg.time.Minute()) + ":" + fmt.Sprintf("%d", msg.time.Second()))
 			// f.WriteString("Sender prefix: " + senderPrefix + "\n")
 			// f.WriteString("Plain Text: " + msg.content + "\n")
 
@@ -296,13 +297,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				content = strings.TrimSpace(content)
 			} else {
 				// Fallback to plain text if rendering fails
+				log.Error(err)
 				content = msg.content
 			}
 
 			// f.WriteString("Rendered content: " + content + "\n")
 			// f.WriteString("Trimmed content: " + strings.TrimSpace(content) + "\n")
 
-			formattedMsg = senderPrefix + content + timeStamp
+			formattedMsg = timeStamp + " " + senderPrefix + content
 			// f.WriteString(formattedMsg)
 
 		}
@@ -333,7 +335,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 	// The header
-	s := "Le Chat 0.1\n\n"
+	header := "Le Chat 0.1\n\nEmojis are enabled. Ex: :joy:"
 
 	// for _, user := range m.users {
 	// 	s += fmt.Sprintf("[%s]: ", user)
@@ -349,14 +351,14 @@ func (m model) View() string {
 	// s += "\nPress q to quit.\n"
 
 	// Send the UI for rendering
-	s += fmt.Sprintf(
+	string := header + fmt.Sprintf(
 		"%s%s%s",
 		m.viewport.View(),
 		gap,
 		m.textarea.View(),
 	)
 
-	return s
+	return string
 }
 
 // You can wire any Bubble Tea model up to the middleware with a function that
@@ -381,7 +383,10 @@ func teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	// Get a renderer for the current SSH session
 	renderer := bubbletea.MakeRenderer(s)
 	mdRenderer, _ := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		// glamour.WithAutoStyle(),
+		glamour.WithEmoji(),
+		// list of supporter emojis: https://gist.github.com/rxaviers/7360908
+		glamour.WithStylesFromJSONFile("style.json"),
 		glamour.WithWordWrap(80), // Adjust based on your needs
 	)
 
@@ -392,7 +397,7 @@ func teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	ta.Prompt = "┃ "
 	ta.CharLimit = 1000
 	ta.SetWidth(30)
-	ta.SetHeight(5)
+	ta.SetHeight(3)
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.ShowLineNumbers = false
 	// ta.KeyMap.InsertNewline.SetEnabled(false)
@@ -453,21 +458,21 @@ func main() {
 		wish.WithAddress(net.JoinHostPort(host, port)),
 		wish.WithHostKeyPath(".ssh/id_ed25519"),
 		// with this enabled, users can log in with their pubkey
-		// wish.WithPublicKeyAuth(func(ctx ssh.Context, key ssh.PublicKey) bool {
-		// 	return key.Type() == "ssh-ed25519"
-		// }),
-		// wish.WithPasswordAuth(func(ctx ssh.Context, password string) bool {
-		// 	// Define your username/password pairs here
-		// 	credentials := map[string]string{
-		// 		"daniel": "admin",
-		// 		"nikki":  "nikki",
-		// 		"anna":   "anna",
-		// 	}
+		wish.WithPublicKeyAuth(func(ctx ssh.Context, key ssh.PublicKey) bool {
+			return key.Type() == "ssh-ed25519"
+		}),
+		wish.WithPasswordAuth(func(ctx ssh.Context, password string) bool {
+			// Define your username/password pairs here
+			credentials := map[string]string{
+				"daniel": "admin",
+				"nikki":  "nikki",
+				"anna":   "anna",
+			}
 
-		// 	// Check if the provided username exists and the password matches
-		// 	expectedPassword, userExists := credentials[ctx.User()]
-		// 	return userExists && password == expectedPassword
-		// }),
+			// Check if the provided username exists and the password matches
+			expectedPassword, userExists := credentials[ctx.User()]
+			return userExists && password == expectedPassword
+		}),
 		wish.WithMiddleware(
 			bubbletea.Middleware(teaHandler),
 			logging.Middleware(),
