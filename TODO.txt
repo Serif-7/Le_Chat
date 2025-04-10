@@ -1,2 +1,7 @@
 [ ] fix markdown rendering when dockerized
-[ ] add multi-line messages (shift+enter)
+[ ] add multi-line messages (shift+enter) BLOCKED: awaiting PR
+[ ] emoji autocomplete
+[ ] @ mentions
+[ ] Multiple channels (shift+direction) (list on left side)
+[ ] Pins
+[ ] Proper authentication (receive pubkeys on separate port?)

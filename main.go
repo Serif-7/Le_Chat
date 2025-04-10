@@ -32,9 +32,9 @@ import (
 )
 
 const (
-	host = "0.0.0.0"
-	port = "8888"
-	gap  = "\n\n"
+	host   = "0.0.0.0"
+	port   = "8888"
+	header = "Le Chat 0.1\nEmojis are enabled. Ex: :joy:\nSee https://gist.github.com/rxaviers/7360908 for complete list\n\n"
 )
 
 var (
@@ -136,37 +136,60 @@ func checkNewMessages(ch chan chatMessage) tea.Msg {
 	}
 }
 
-// func initialModel() model {
+func initialModel(s ssh.Session) model {
 
-// 	ta := textarea.New()
-// 	ta.Placeholder = "Send a message..."
-// 	ta.Focus()
+	ta := textarea.New()
+	ta.Placeholder = "Send a message..."
+	ta.Focus()
 
-// 	ta.Prompt = "┃ "
-// 	ta.CharLimit = 1000
+	ta.Prompt = "┃ "
+	ta.CharLimit = 1000
 
-// 	ta.SetWidth(30)
-// 	ta.SetHeight(3)
+	ta.SetWidth(30) // set width based on terminal
+	ta.SetHeight(3) // same here
 
-// 	// Remove cursor line styling
-// 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	// Remove cursor line styling
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 
-// 	ta.ShowLineNumbers = false
+	ta.ShowLineNumbers = false
 
-// 	vp := viewport.New(30, 5)
-// 	vp.SetContent(`Welcome to the chat room!
-// Type a message and press Enter to send.`)
+	vp := viewport.New(30, 5)
+	vp.SetContent(`Welcome to the chat room!
+Type a message and press Enter to send.`)
 
-// 	ta.KeyMap.InsertNewline.SetEnabled(false)
+	ta.KeyMap.InsertNewline.SetEnabled(false)
 
-// 	return model{
-// 		textarea:    ta,
-// 		messages:    []string{},
-// 		viewport:    vp,
-// 		senderStyle: lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
-// 		err:         nil,
-// 	}
-// }
+	username := s.User()
+	if username == "" {
+		username = "Anonymous"
+	}
+	// Generate a unique client ID
+	clientID := fmt.Sprintf("%s-%d", username, time.Now().UnixNano())
+
+	// Register this client to receive messages
+	clientChan := registerClient(clientID)
+
+	// markdown renderer
+	mdRenderer, _ := glamour.NewTermRenderer(
+		// glamour.WithAutoStyle(),
+		glamour.WithEmoji(),
+		// list of supporter emojis: https://gist.github.com/rxaviers/7360908
+		glamour.WithStylesFromJSONFile("style.json"),
+		glamour.WithWordWrap(80), // Adjust based on your needs
+	)
+
+	return model{
+		username:    username,
+		clientID:    clientID,
+		clientChan:  clientChan,
+		mdRenderer:  mdRenderer,
+		textarea:    ta,
+		messages:    []string{},
+		viewport:    vp,
+		senderStyle: lipgloss.NewStyle().Foreground(lipgloss.Color("5")),
+		err:         nil,
+	}
+}
 
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
@@ -189,7 +212,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.viewport.Width = msg.Width
 		m.textarea.SetWidth(msg.Width)
-		m.viewport.Height = msg.Height - m.textarea.Height() - lipgloss.Height(gap)
+		m.viewport.Height = msg.Height - m.textarea.Height() - lipgloss.Height(header)
 
 		if len(m.messages) > 0 {
 			// Wrap content before setting it.
@@ -197,10 +220,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.viewport.GotoBottom()
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "enter":
+		switch msg.Type {
+		case tea.KeyEnter:
 			// Regular Enter - send the message
 			if m.textarea.Value() != "" {
+				log.Info("Chat Message", "string", m.textarea.Value())
 				// Create and broadcast the message
 				newMsg := chatMessage{
 					sender:  m.username,
@@ -215,14 +239,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Skip default textarea handling for this key
 			return m, checkMessagesCmd(m.clientChan)
-		case "shift+enter":
+		case tea.KeyShiftTab:
 			// Shift+Enter - insert a newline
 			m.textarea, tiCmd = m.textarea.Update(tea.KeyMsg{
 				Type:  tea.KeyRunes,
 				Runes: []rune("\n"),
 			})
 			return m, tea.Batch(tiCmd, checkMessagesCmd(m.clientChan))
-		case "escape", "ctrl+c":
+		case tea.KeyCtrlC, tea.KeyEscape:
 			// Send leave message before quitting
 			leaveMsg := chatMessage{
 				sender:  "system",
@@ -293,8 +317,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			rendered, err := m.mdRenderer.Render(msg.content)
 			var content string
 			if err == nil {
-				content = strings.Trim(rendered, " \n\t")
-				content = strings.TrimSpace(content)
+				// log.Info("Rendered message: ", "txt", rendered)
+				content = rendered
+				// content = strings.Trim(rendered, " \n\t")
+				// content = strings.TrimSpace(content)
 			} else {
 				// Fallback to plain text if rendering fails
 				log.Error(err)
@@ -335,7 +361,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 	// The header
-	header := "Le Chat 0.1\n\nEmojis are enabled. Ex: :joy:"
 
 	// for _, user := range m.users {
 	// 	s += fmt.Sprintf("[%s]: ", user)
@@ -351,10 +376,11 @@ func (m model) View() string {
 	// s += "\nPress q to quit.\n"
 
 	// Send the UI for rendering
-	string := header + fmt.Sprintf(
-		"%s%s%s",
+	string := fmt.Sprintf(
+		"%s%s%s%s",
+		header,
 		m.viewport.View(),
-		gap,
+		"\n\n",
 		m.textarea.View(),
 	)
 
@@ -380,66 +406,12 @@ func teaHandler(s ssh.Session) (tea.Model, []tea.ProgramOption) {
 	// txtStyle := renderer.NewStyle().Foreground(lipgloss.Color("10"))
 	// quitStyle := renderer.NewStyle().Foreground(lipgloss.Color("8"))
 
-	// Get a renderer for the current SSH session
-	renderer := bubbletea.MakeRenderer(s)
-	mdRenderer, _ := glamour.NewTermRenderer(
-		// glamour.WithAutoStyle(),
-		glamour.WithEmoji(),
-		// list of supporter emojis: https://gist.github.com/rxaviers/7360908
-		glamour.WithStylesFromJSONFile("style.json"),
-		glamour.WithWordWrap(80), // Adjust based on your needs
-	)
-
-	// Initialize the textarea
-	ta := textarea.New()
-	ta.Placeholder = "Send a message..."
-	ta.Focus()
-	ta.Prompt = "┃ "
-	ta.CharLimit = 1000
-	ta.SetWidth(30)
-	ta.SetHeight(3)
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.ShowLineNumbers = false
-	// ta.KeyMap.InsertNewline.SetEnabled(false)
-
-	// Initialize the viewport
-	vp := viewport.New(30, 5)
-	vp.SetContent(`Welcome to the chat room!
-Type a message and press Enter to send.`)
-
-	// Get the SSH username to display in the chat
-	username := s.User()
-	if username == "" {
-		username = "Anonymous"
-	}
-
-	// Generate a unique client ID
-	clientID := fmt.Sprintf("%s-%d", username, time.Now().UnixNano())
-
-	// Register this client to receive messages
-	clientChan := registerClient(clientID)
-
-	// Create a command to check for new messages
-	// checkMessages := func() tea.Msg {
-	// 	return checkNewMessages(clientChan)
-	// }
-
-	m := model{
-		username:    username,
-		clientID:    clientID,
-		clientChan:  clientChan,
-		mdRenderer:  mdRenderer,
-		textarea:    ta,
-		messages:    []string{},
-		viewport:    vp,
-		senderStyle: renderer.NewStyle().Foreground(lipgloss.Color("5")),
-		err:         nil,
-	}
+	m := initialModel(s)
 
 	// Add system message about user joining
 	joinMsg := chatMessage{
 		sender:  "system",
-		content: fmt.Sprintf("%s has joined the chat", username),
+		content: fmt.Sprintf("%s has joined the chat", m.username),
 		time:    time.Now(),
 	}
 	msgChan <- joinMsg
@@ -476,7 +448,7 @@ func main() {
 		wish.WithMiddleware(
 			bubbletea.Middleware(teaHandler),
 			logging.Middleware(),
-			activeterm.Middleware(),
+			activeterm.Middleware(), // only active terminals can connect
 		),
 	)
 	if err != nil {
